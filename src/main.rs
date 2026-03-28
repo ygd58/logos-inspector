@@ -9,44 +9,30 @@ use serde_json::{json, Value};
 struct Cli {
     #[arg(long, default_value = "http://localhost:3040")]
     rpc: String,
-
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get account info by address
     Account { address: String },
-    /// Get block by height
     Block { height: u64 },
-    /// Get transaction by hash
     Tx { hash: String },
-    /// Get latest block info
     Latest,
-    /// List deployed programs
     Programs,
+    Watch {
+        #[arg(short, long, default_value = "2")]
+        interval: u64,
+    },
 }
 
 fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value> {
     let client = reqwest::blocking::Client::new();
-    let body = json!({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-        "id": 1
-    });
-
-    let resp: Value = client
-        .post(url)
-        .json(&body)
-        .send()?
-        .json()?;
-
+    let body = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
+    let resp: Value = client.post(url).json(&body).send()?.json()?;
     if let Some(err) = resp.get("error") {
         anyhow::bail!("RPC error: {}", err);
     }
-
     Ok(resp["result"].clone())
 }
 
@@ -58,15 +44,11 @@ fn main() -> Result<()> {
         Commands::Account { address } => {
             println!("{}", "Account Info".bold().cyan());
             println!("{}: {}", "Address".bold(), address);
-
             match rpc_call(rpc, "get_account", json!({"account_id": address})) {
                 Ok(result) => {
-                    let balance = result["balance"].as_u64().unwrap_or(0);
-                    let nonce = &result["nonce"];
-                    let owner = &result["program_owner"];
-                    println!("{}: {}", "Balance".bold(), balance.to_string().green());
-                    println!("{}: {}", "Nonce".bold(), nonce);
-                    println!("{}: {}", "Program Owner".bold(), owner);
+                    println!("{}: {}", "Balance".bold(), result["balance"].to_string().green());
+                    println!("{}: {}", "Nonce".bold(), result["nonce"]);
+                    println!("{}: {}", "Program Owner".bold(), result["program_owner"]);
                 }
                 Err(e) => println!("{}: {}", "Error".red(), e),
             }
@@ -74,18 +56,14 @@ fn main() -> Result<()> {
 
         Commands::Block { height } => {
             println!("{} {}", "Block".bold().cyan(), height);
-
             match rpc_call(rpc, "get_block", json!({"block_id": height})) {
-                Ok(result) => {
-                    println!("{}: {}", "Raw".bold(), result["block"]);
-                }
+                Ok(result) => println!("{}: {}", "Raw".bold(), result["block"]),
                 Err(e) => println!("{}: {}", "Error".red(), e),
             }
         }
 
         Commands::Tx { hash } => {
             println!("{} {}", "Transaction".bold().cyan(), hash);
-
             match rpc_call(rpc, "get_transaction_by_hash", json!({"tx_hash": hash})) {
                 Ok(result) => {
                     if result.is_null() {
@@ -100,18 +78,10 @@ fn main() -> Result<()> {
 
         Commands::Latest => {
             println!("{}", "Latest Block".bold().cyan());
-
-            match rpc_call(rpc, "get_last_block", json!({})) {
+            match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
                 Ok(result) => {
                     let height = result["last_block"].as_u64().unwrap_or(0);
                     println!("{}: {}", "Height".bold(), height.to_string().green());
-
-                    match rpc_call(rpc, "get_block", json!({"block_id": height})) {
-                        Ok(block) => {
-                            println!("{}: {}", "Block data".bold(), block["block"]);
-                        }
-                        Err(_) => {}
-                    }
                 }
                 Err(e) => println!("{}: {}", "Error".red(), e),
             }
@@ -119,31 +89,48 @@ fn main() -> Result<()> {
 
         Commands::Programs => {
             println!("{}", "Deployed Programs".bold().cyan());
-
-            match rpc_call(rpc, "get_program_ids", json!({})) {
+            match rpc_call(rpc, "get_program_ids", json!({"_": 0})) {
                 Ok(result) => {
                     if let Some(programs) = result["program_ids"].as_object() {
-                        if programs.is_empty() {
-                            println!("{}", "No programs deployed".yellow());
-                        } else {
-                            for (name, id) in programs {
-                                // Convert u32 array to hex string
-                                let hex = if let Some(arr) = id.as_array() {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_u64())
-                                        .map(|n| format!("{:08x}", n))
-                                        .collect::<Vec<_>>()
-                                        .join("")
-                                } else {
-                                    id.to_string()
-                                };
-                                println!("  {} {}", "▸".cyan(), name.bold().green());
-                                println!("    {}", hex.dimmed());
-                            }
+                        for (name, id) in programs {
+                            let hex = if let Some(arr) = id.as_array() {
+                                arr.iter()
+                                    .filter_map(|v| v.as_u64())
+                                    .map(|n| format!("{:08x}", n))
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            } else {
+                                id.to_string()
+                            };
+                            println!("  {} {}", "▸".cyan(), name.bold().green());
+                            println!("    {}", hex.dimmed());
                         }
                     }
                 }
                 Err(e) => println!("{}: {}", "Error".red(), e),
+            }
+        }
+
+        Commands::Watch { interval } => {
+            println!("{}", "Watching chain...".bold().cyan());
+            println!("Press Ctrl+C to stop\n");
+            let mut last_height = 0u64;
+            loop {
+                match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+                    Ok(result) => {
+                        let height = result["last_block"].as_u64().unwrap_or(0);
+                        if height != last_height {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            println!("[{}] {} {}", now.to_string().dimmed(), "Block".bold(), height.to_string().green().bold());
+                            last_height = height;
+                        }
+                    }
+                    Err(e) => println!("{}: {}", "Error".red(), e),
+                }
+                std::thread::sleep(std::time::Duration::from_secs(interval));
             }
         }
     }
