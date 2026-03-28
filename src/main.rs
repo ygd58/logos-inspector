@@ -16,18 +16,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get account info by address
-    Account { address: String },
-    /// Get block by height
-    Block { height: u64 },
-    /// Get transaction by hash
-    Tx { hash: String },
+    /// Get account balance, nonce, and program owner
+    Account {
+        /// Account address (base58)
+        address: String,
+    },
+    /// Get decoded block info (id, timestamp, hash)
+    Block {
+        /// Block height number
+        height: u64,
+    },
+    /// Look up a transaction by its hash
+    Tx {
+        /// Transaction hash (hex)
+        hash: String,
+    },
     /// Get latest block info
     Latest,
     /// List deployed programs
     Programs,
-    /// Watch chain in real-time
+    /// Get a range of blocks
+    Blocks {
+        /// Start block height
+        from: u64,
+        /// End block height
+        to: u64,
+    },
+    /// Watch new blocks in real-time
     Watch {
+        /// Polling interval in seconds
         #[arg(short, long, default_value = "2")]
         interval: u64,
     },
@@ -119,12 +136,13 @@ fn main() -> Result<()> {
 
         Commands::Tx { hash } => {
             println!("{} {}", "Transaction".bold().cyan(), hash.yellow());
-            match rpc_call(rpc, "get_transaction_by_hash", json!({"tx_hash": hash})) {
+            match rpc_call(rpc, "get_transaction_by_hash", json!({"hash": hash})) {
                 Ok(result) => {
-                    if result.is_null() || result["tx"].is_null() {
+                    if result.is_null() || result["transaction"].is_null() {
                         println!("{}", "Transaction not found".yellow());
+                        println!("{}", "Tip: make sure the hash is correct and the tx is finalized".dimmed());
                     } else {
-                        println!("{}", serde_json::to_string_pretty(&result)?);
+                        println!("{}", serde_json::to_string_pretty(&result["transaction"])?);
                     }
                 }
                 Err(e) => println!("{}: {}", "Error".red().bold(), e),
@@ -164,6 +182,22 @@ fn main() -> Result<()> {
                                 println!("  {} {}", "▸".cyan(), name.bold().green());
                                 println!("    {}", hex.dimmed());
                             }
+                        }
+                    }
+                }
+                Err(e) => println!("{}: {}", "Error".red().bold(), e),
+            }
+        }
+
+        Commands::Blocks { from, to } => {
+            println!("{} {} {} {}", "Blocks".bold().cyan(), from, "→".dimmed(), to);
+            match rpc_call(rpc, "get_block_range", json!({"start_block_id": from, "end_block_id": to})) {
+                Ok(result) => {
+                    if let Some(blocks) = result["blocks"].as_array() {
+                        println!("{} blocks", blocks.len().to_string().green());
+                        for b64 in blocks {
+                            let raw = b64.as_str().unwrap_or("");
+                            println!("  {}", decode_block_data(raw));
                         }
                     }
                 }
