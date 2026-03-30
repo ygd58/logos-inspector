@@ -5,8 +5,8 @@ use serde_json::{json, Value};
 use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Parser)]
-#[command(name = "logos-inspector")]
-#[command(about = "Inspect Logos blockchain state", version = "0.1.0")]
+#[command(name = "lez-inspector")]
+#[command(about = "Inspect LEZ sequencer state", version = "0.1.0")]
 struct Cli {
     #[arg(long, default_value = "http://localhost:3040")]
     rpc: String,
@@ -54,7 +54,11 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    let body = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
+    let body = if params.is_null() {
+        json!({"jsonrpc": "2.0", "method": method, "id": 1})
+    } else {
+        json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
+    };
     let resp: Value = client.post(url).json(&body).send()?.json()?;
     if let Some(err) = resp.get("error") {
         let msg = err["message"].as_str().unwrap_or("unknown error");
@@ -84,11 +88,15 @@ fn decode_block_data(b64: &str) -> String {
                 let block_id = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0;8]));
                 let hash_hex: String = bytes[8..40].iter().map(|b| format!("{:02x}", b)).collect();
                 let timestamp_ms = u64::from_le_bytes(bytes[40..48].try_into().unwrap_or([0;8]));
-                let secs = timestamp_ms / 1000;
-                let dt = chrono::DateTime::from_timestamp(secs as i64, 0)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_else(|| secs.to_string());
-                format!("id={} time={} hash={}...", block_id, dt, &hash_hex[..16])
+                let time_str = if timestamp_ms == 0 {
+                    "genesis".to_string()
+                } else {
+                    let secs = timestamp_ms / 1000;
+                    chrono::DateTime::from_timestamp(secs as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| secs.to_string())
+                };
+                format!("id={} time={} hash={}...", block_id, time_str, &hash_hex[..16])
             } else {
                 format!("{} bytes (raw)", bytes.len())
             }
@@ -135,6 +143,11 @@ fn main() -> Result<()> {
         }
 
         Commands::Tx { hash } => {
+            // Validate hash format: must be exactly 64 hex characters
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                println!("{}: {}", "Error".red().bold(), "hash must be 64 hex characters");
+                return Ok(());
+            }
             println!("{} {}", "Transaction".bold().cyan(), hash.yellow());
             match rpc_call(rpc, "get_transaction_by_hash", json!({"hash": hash})) {
                 Ok(result) => {
@@ -151,7 +164,7 @@ fn main() -> Result<()> {
 
         Commands::Latest => {
             println!("{}", "Latest Block".bold().cyan());
-            match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+            match rpc_call(rpc, "get_last_block", json!(null)) {
                 Ok(result) => {
                     let height = result["last_block"].as_u64().unwrap_or(0);
                     println!("{}: {}", "Height".bold(), height.to_string().green().bold());
@@ -169,7 +182,7 @@ fn main() -> Result<()> {
 
         Commands::Programs => {
             println!("{}", "Deployed Programs".bold().cyan());
-            match rpc_call(rpc, "get_program_ids", json!({"_": 0})) {
+            match rpc_call(rpc, "get_program_ids", json!(null)) {
                 Ok(result) => {
                     if let Some(programs) = result["program_ids"].as_object() {
                         if programs.is_empty() {
@@ -206,13 +219,13 @@ fn main() -> Result<()> {
         }
 
         Commands::Watch { interval } => {
-            println!("{}", "Watching Logos chain...".bold().cyan());
+            println!("{}", "Watching LEZ chain...".bold().cyan());
             println!("{}: {}s  |  Press Ctrl+C to stop", "Interval".bold(), interval);
             println!("{}", "─".repeat(50).dimmed());
             let mut last_height = 0u64;
             let mut same_count = 0u64;
             loop {
-                match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+                match rpc_call(rpc, "get_last_block", json!(null)) {
                     Ok(result) => {
                         let height = result["last_block"].as_u64().unwrap_or(0);
                         if height != last_height {
