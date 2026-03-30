@@ -1,6 +1,6 @@
-# logos-inspector
+# lez-inspector
 
-A CLI tool to inspect Logos blockchain state in real-time.
+A CLI tool to inspect LEZ sequencer state in real-time.
 
 ## Installation
 
@@ -10,20 +10,20 @@ A CLI tool to inspect Logos blockchain state in real-time.
 
 ## Usage
 
-    logos-inspector latest          # latest block height
-    logos-inspector block 42        # block by height
-    logos-inspector account <addr>  # account info
-    logos-inspector tx <hash>       # transaction lookup
-    logos-inspector programs        # list deployed programs
-    logos-inspector watch           # watch chain in real-time
+    lez-inspector latest          # latest block height
+    lez-inspector block 42        # block by height
+    lez-inspector account <addr>  # account info
+    lez-inspector tx <hash>       # transaction lookup
+    lez-inspector programs        # list deployed programs
+    lez-inspector watch           # watch chain in real-time
 
 ## Custom RPC
 
-    logos-inspector --rpc http://localhost:3040 latest
+    lez-inspector --rpc http://localhost:3040 latest
 
 ## Requirements
 
-- Logos sequencer running (via logos-scaffold localnet start)
+- LEZ sequencer running (via logos-scaffold localnet start)
 - Default RPC: http://localhost:3040
 
 ## License

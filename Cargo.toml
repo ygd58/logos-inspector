@@ -1,8 +1,8 @@
 [package]
-name = "logos-inspector"
+name = "lez-inspector"
 version = "0.1.0"
 edition = "2021"
-description = "CLI tool to inspect Logos blockchain state"
+description = "CLI tool to inspect LEZ sequencer state"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -10,7 +10,7 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+
 colored = "2"
 anyhow = "1"
 chrono = "0.4"

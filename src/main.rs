@@ -2,11 +2,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::*;
 use serde_json::{json, Value};
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 
 #[derive(Parser)]
-#[command(name = "logos-inspector")]
-#[command(about = "Inspect Logos blockchain state", version = "0.1.0")]
+#[command(name = "lez-inspector")]
+#[command(about = "Inspect LEZ sequencer state", version = "0.1.0")]
 struct Cli {
     #[arg(long, default_value = "http://localhost:3040")]
     rpc: String,
@@ -54,6 +54,7 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
+    // params field omitted for unit-struct methods (see PR #1 by @marclawclaw)
     let body = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
     let resp: Value = client.post(url).json(&body).send()?.json()?;
     if let Some(err) = resp.get("error") {
@@ -81,20 +82,31 @@ fn decode_block_data(b64: &str) -> String {
         Ok(bytes) => {
             // Format: [block_id: u64 le][hash: 32 bytes][timestamp_ms: u64 le]
             if bytes.len() >= 48 {
-                let block_id = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0;8]));
+                let block_id = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0; 8]));
                 let hash_hex: String = bytes[8..40].iter().map(|b| format!("{:02x}", b)).collect();
-                let timestamp_ms = u64::from_le_bytes(bytes[40..48].try_into().unwrap_or([0;8]));
-                let secs = timestamp_ms / 1000;
-                let dt = chrono::DateTime::from_timestamp(secs as i64, 0)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_else(|| secs.to_string());
-                format!("id={} time={} hash={}...", block_id, dt, &hash_hex[..16])
+                let timestamp_ms = u64::from_le_bytes(bytes[40..48].try_into().unwrap_or([0; 8]));
+                let time_str = if timestamp_ms == 0 {
+                    "genesis".to_string()
+                } else {
+                    let secs = timestamp_ms / 1000;
+                    chrono::DateTime::from_timestamp(secs as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| secs.to_string())
+                };
+                format!(
+                    "id={} time={} hash={}...",
+                    block_id, time_str, &hash_hex[..16]
+                )
             } else {
                 format!("{} bytes (raw)", bytes.len())
             }
         }
         Err(_) => b64.to_string(),
     }
+}
+
+fn validate_tx_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn main() -> Result<()> {
@@ -114,7 +126,11 @@ fn main() -> Result<()> {
                     let data_len = acc["data"].as_array().map(|a| a.len()).unwrap_or(0);
                     println!("{}: {}", "Balance".bold(), balance.to_string().green());
                     println!("{}: {}", "Nonce".bold(), nonce);
-                    println!("{}: {}...", "Program Owner".bold(), &owner[..16.min(owner.len())]);
+                    println!(
+                        "{}: {}...",
+                        "Program Owner".bold(),
+                        &owner[..16.min(owner.len())]
+                    );
                     println!("{}: {} bytes", "Data".bold(), data_len);
                 }
                 Err(e) => println!("{}: {}", "Error".red().bold(), e),
@@ -128,19 +144,35 @@ fn main() -> Result<()> {
                     let raw = result["block"].as_str().unwrap_or("");
                     let decoded = decode_block_data(raw);
                     println!("{}: {}", "Decoded".bold(), decoded);
-                    println!("{}: {}...", "Raw (base64)".bold().dimmed(), &raw[..20.min(raw.len())]);
+                    println!(
+                        "{}: {}...",
+                        "Raw (base64)".bold().dimmed(),
+                        &raw[..20.min(raw.len())]
+                    );
                 }
                 Err(e) => println!("{}: {}", "Error".red().bold(), e),
             }
         }
 
         Commands::Tx { hash } => {
+            // Validate hash format: must be exactly 64 hex characters
+            if !validate_tx_hash(&hash) {
+                println!(
+                    "{}: {}",
+                    "Error".red().bold(),
+                    "hash must be 64 hex characters"
+                );
+                return Ok(());
+            }
             println!("{} {}", "Transaction".bold().cyan(), hash.yellow());
             match rpc_call(rpc, "get_transaction_by_hash", json!({"hash": hash})) {
                 Ok(result) => {
                     if result.is_null() || result["transaction"].is_null() {
                         println!("{}", "Transaction not found".yellow());
-                        println!("{}", "Tip: make sure the hash is correct and the tx is finalized".dimmed());
+                        println!(
+                            "{}",
+                            "Tip: make sure the hash is correct and the tx is finalized".dimmed()
+                        );
                     } else {
                         println!("{}", serde_json::to_string_pretty(&result["transaction"])?);
                     }
@@ -151,7 +183,7 @@ fn main() -> Result<()> {
 
         Commands::Latest => {
             println!("{}", "Latest Block".bold().cyan());
-            match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+            match rpc_call(rpc, "get_last_block", json!(null)) {
                 Ok(result) => {
                     let height = result["last_block"].as_u64().unwrap_or(0);
                     println!("{}: {}", "Height".bold(), height.to_string().green().bold());
@@ -169,13 +201,16 @@ fn main() -> Result<()> {
 
         Commands::Programs => {
             println!("{}", "Deployed Programs".bold().cyan());
-            match rpc_call(rpc, "get_program_ids", json!({"_": 0})) {
+            match rpc_call(rpc, "get_program_ids", json!(null)) {
                 Ok(result) => {
                     if let Some(programs) = result["program_ids"].as_object() {
                         if programs.is_empty() {
                             println!("{}", "No programs deployed".yellow());
                         } else {
-                            println!("{} programs found", programs.len().to_string().green());
+                            println!(
+                                "{} programs found",
+                                programs.len().to_string().green()
+                            );
                             println!();
                             for (name, id) in programs {
                                 let hex = format_program_id(id);
@@ -190,8 +225,18 @@ fn main() -> Result<()> {
         }
 
         Commands::Blocks { from, to } => {
-            println!("{} {} {} {}", "Blocks".bold().cyan(), from, "→".dimmed(), to);
-            match rpc_call(rpc, "get_block_range", json!({"start_block_id": from, "end_block_id": to})) {
+            println!(
+                "{} {} {} {}",
+                "Blocks".bold().cyan(),
+                from,
+                "→".dimmed(),
+                to
+            );
+            match rpc_call(
+                rpc,
+                "get_block_range",
+                json!({"start_block_id": from, "end_block_id": to}),
+            ) {
                 Ok(result) => {
                     if let Some(blocks) = result["blocks"].as_array() {
                         println!("{} blocks", blocks.len().to_string().green());
@@ -206,13 +251,17 @@ fn main() -> Result<()> {
         }
 
         Commands::Watch { interval } => {
-            println!("{}", "Watching Logos chain...".bold().cyan());
-            println!("{}: {}s  |  Press Ctrl+C to stop", "Interval".bold(), interval);
+            println!("{}", "Watching LEZ chain...".bold().cyan());
+            println!(
+                "{}: {}s  |  Press Ctrl+C to stop",
+                "Interval".bold(),
+                interval
+            );
             println!("{}", "─".repeat(50).dimmed());
             let mut last_height = 0u64;
             let mut same_count = 0u64;
             loop {
-                match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+                match rpc_call(rpc, "get_last_block", json!(null)) {
                     Ok(result) => {
                         let height = result["last_block"].as_u64().unwrap_or(0);
                         if height != last_height {
@@ -243,4 +292,177 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod decode_block_data {
+        use super::*;
+
+        #[test]
+        fn test_valid_block_data() {
+            // Create valid block data: [block_id: u64 le][hash: 32 bytes][timestamp_ms: u64 le]
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&1u64.to_le_bytes()); // block_id = 1
+            bytes.extend_from_slice(&[0u8; 32]); // hash = 32 zero bytes
+            bytes.extend_from_slice(&1000u64.to_le_bytes()); // timestamp_ms = 1000
+
+            let b64 = general_purpose::STANDARD.encode(&bytes);
+            let result = decode_block_data(&b64);
+
+            assert!(result.contains("id=1"));
+            assert!(result.contains("time="));
+            assert!(result.contains("hash="));
+        }
+
+        #[test]
+        fn test_genesis_block() {
+            // Create genesis block data: timestamp_ms = 0
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&1u64.to_le_bytes()); // block_id = 1
+            bytes.extend_from_slice(&[0u8; 32]); // hash
+            bytes.extend_from_slice(&0u64.to_le_bytes()); // timestamp_ms = 0
+
+            let b64 = general_purpose::STANDARD.encode(&bytes);
+            let result = decode_block_data(&b64);
+
+            assert!(result.contains("genesis"), "Expected 'genesis' in output: {}", result);
+        }
+
+        #[test]
+        fn test_empty_input() {
+            // Empty string decodes to empty bytes, which returns "0 bytes (raw)"
+            let result = decode_block_data("");
+            assert!(result.contains("0 bytes (raw)"));
+        }
+
+        #[test]
+        fn test_too_short_input() {
+            // Base64 encoded data that decodes to less than 48 bytes
+            let short_data = vec![0u8; 10];
+            let b64 = general_purpose::STANDARD.encode(&short_data);
+            let result = decode_block_data(&b64);
+
+            assert!(result.contains("bytes (raw)"));
+            assert!(result.contains("10"));
+        }
+
+        #[test]
+        fn test_invalid_base64() {
+            let result = decode_block_data("not-valid-base64!!!");
+            assert_eq!(result, "not-valid-base64!!!");
+        }
+
+        #[test]
+        fn test_non_zero_timestamp() {
+            // Create block with non-zero timestamp
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&42u64.to_le_bytes()); // block_id = 42
+            bytes.extend_from_slice(&[0u8; 32]); // hash
+            bytes.extend_from_slice(&1609459200000u64.to_le_bytes()); // timestamp_ms (2021-01-01)
+
+            let b64 = general_purpose::STANDARD.encode(&bytes);
+            let result = decode_block_data(&b64);
+
+            assert!(result.contains("id=42"));
+            assert!(!result.contains("genesis"));
+        }
+    }
+
+    mod format_program_id {
+        use super::*;
+
+        #[test]
+        fn test_valid_program_id() {
+            let arr = json!([1, 2, 3, 4]);
+            let result = format_program_id(&arr);
+            assert_eq!(result, "00000001000000020000000300000004");
+        }
+
+        #[test]
+        fn test_empty_array() {
+            let arr = json!([]);
+            let result = format_program_id(&arr);
+            assert_eq!(result, "");
+        }
+
+        #[test]
+        fn test_non_array_value() {
+            let arr = json!("not-an-array");
+            let result = format_program_id(&arr);
+            assert_eq!(result, "\"not-an-array\"");
+        }
+
+        #[test]
+        fn test_large_values() {
+            // Test with values that fit in i64
+            let arr = json!([255u64, 65535u64, 1000000u64]);
+            let result = format_program_id(&arr);
+            // Verify each value is formatted correctly as 8 hex chars
+            assert_eq!(result.len(), 24); // 3 values * 8 chars each
+            assert_eq!(&result[0..8], "000000ff");
+            assert_eq!(&result[8..16], "0000ffff");
+            assert_eq!(&result[16..24], "000f4240"); // 1000000 in hex
+        }
+
+        #[test]
+        fn test_null_value() {
+            let arr = json!(null);
+            let result = format_program_id(&arr);
+            assert_eq!(result, "null");
+        }
+    }
+
+    mod tx_hash_validation {
+        use super::*;
+
+        #[test]
+        fn test_valid_64_char_hex() {
+            let valid_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            assert!(validate_tx_hash(valid_hash));
+        }
+
+        #[test]
+        fn test_too_short() {
+            assert!(!validate_tx_hash("deadbeef"));
+            assert!(!validate_tx_hash("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0"));
+        }
+
+      #[test]
+        fn test_invalid_characters() {
+            assert!(!validate_tx_hash(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefg"
+            ));
+            assert!(!validate_tx_hash(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef!"
+            ));
+        }
+
+        #[test]
+        fn test_uppercase_hex() {
+            // Uppercase hex should be valid
+            let valid_hash = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+            assert!(validate_tx_hash(valid_hash));
+        }
+
+        #[test]
+        fn test_mixed_case_hex() {
+            let valid_hash = "0123456789AbCdEf0123456789AbCdEf0123456789AbCdEf0123456789AbCdEf";
+            assert!(validate_tx_hash(valid_hash));
+        }
+
+        #[test]
+        fn test_all_zeros() {
+            let valid_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+            assert!(validate_tx_hash(valid_hash));
+        }
+
+        #[test]
+        fn test_all_ones() {
+            let valid_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+            assert!(validate_tx_hash(valid_hash));
+        }
+    }
 }
