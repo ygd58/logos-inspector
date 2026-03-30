@@ -54,7 +54,13 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    let body = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
+    // Omit `params` entirely for unit-struct methods (null/Value::Null).
+    // Some sequencer versions reject non-null params for methods that take no arguments.
+    let body = if params.is_null() {
+        json!({"jsonrpc": "2.0", "method": method, "id": 1})
+    } else {
+        json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
+    };
     let resp: Value = client.post(url).json(&body).send()?.json()?;
     if let Some(err) = resp.get("error") {
         let msg = err["message"].as_str().unwrap_or("unknown error");
@@ -151,7 +157,7 @@ fn main() -> Result<()> {
 
         Commands::Latest => {
             println!("{}", "Latest Block".bold().cyan());
-            match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+            match rpc_call(rpc, "get_last_block", Value::Null) {
                 Ok(result) => {
                     let height = result["last_block"].as_u64().unwrap_or(0);
                     println!("{}: {}", "Height".bold(), height.to_string().green().bold());
@@ -169,7 +175,7 @@ fn main() -> Result<()> {
 
         Commands::Programs => {
             println!("{}", "Deployed Programs".bold().cyan());
-            match rpc_call(rpc, "get_program_ids", json!({"_": 0})) {
+            match rpc_call(rpc, "get_program_ids", Value::Null) {
                 Ok(result) => {
                     if let Some(programs) = result["program_ids"].as_object() {
                         if programs.is_empty() {
@@ -212,7 +218,7 @@ fn main() -> Result<()> {
             let mut last_height = 0u64;
             let mut same_count = 0u64;
             loop {
-                match rpc_call(rpc, "get_last_block", json!({"_": 0})) {
+                match rpc_call(rpc, "get_last_block", Value::Null) {
                     Ok(result) => {
                         let height = result["last_block"].as_u64().unwrap_or(0);
                         if height != last_height {
