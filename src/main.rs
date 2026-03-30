@@ -54,11 +54,8 @@ fn rpc_call(url: &str, method: &str, params: Value) -> Result<Value> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    let body = if params.is_null() {
-        json!({"jsonrpc": "2.0", "method": method, "id": 1})
-    } else {
-        json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
-    };
+    // params field omitted for unit-struct methods (see PR #1 by @marclawclaw)
+    let body = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
     let resp: Value = client.post(url).json(&body).send()?.json()?;
     if let Some(err) = resp.get("error") {
         let msg = err["message"].as_str().unwrap_or("unknown error");
